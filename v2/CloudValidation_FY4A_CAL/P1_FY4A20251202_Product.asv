@@ -1,0 +1,365 @@
+clc; clear; close all;
+%% 预设置
+% 研究区域 中国73-135E，3-54N；云南：97-107，21-30%
+Reg.LonMin = 73; %经度
+Reg.LonMax = 135;
+Reg.LatMin = 3; %纬度
+Reg.LatMax = 54;
+starttime = datenum('2022322', 'yyyymmdd'); % 时间范围在同一年内
+endtime = datenum('20220630', 'yyyymmdd');
+% correct_flag = 1; % 1--代表进行视差校正  2---代表不进行视差校正
+% savepath0 = '/PublicData/CAL_FY4_MatchData/New_P1_30min_4class_COD/';
+savepath0 = '/home/yangyin/liusiman/CloudValidation_FY4A_CAL/P1_Matched_CF';
+% --- 匹配阈值设置 ---
+% 空间距离阈值：例如，FY4A网格分辨率约为4km，半个格网分辨率取2.5km
+DISTANCE_THRESHOLD_KM = 2.5; % 距离阈值 (单位: km)
+% ---- 时间匹配阈值 ----
+MaxTimeDiff_minutes = 10;
+MaxTimeDiff_hours   = MaxTimeDiff_minutes / 60;
+
+%% 读取数据——根据自己的数据存储位置修改路径
+% dirH8 = '/data/yangyin/liusiman/FYData/FY_4A/'; %加载葵花数据
+% fileList_H8 = Fun_filesTraversal([dirH8,'CLM/'],'*_CloudMask.mat'); % 以读取H8的云掩膜
+% fileNum_H8 = size(fileList_H8,1);
+% LatLon = importdata('FY-4A_LatLon.mat');
+% FY4A_Lon = LatLon.Lon;
+% FY4A_Lat = LatLon.Lat;
+
+% validRange0 = FY4A_Lon >= Reg.LonMin & FY4A_Lon <= Reg.LonMax & FY4A_Lat >= Reg.LatMin & FY4A_Lat <= Reg.LatMax; %和tbb重叠的经纬度范围。保留中国区域的经纬范围。
+% lonFlag = sum(validRange0, 1) > 0;
+% latFlag = sum(validRange0, 2) > 0;
+
+% 筛选后的经纬度
+% FY4A_Lon = FY4A_Lon(latFlag, lonFlag);
+% FY4A_Lat = FY4A_Lat(latFlag, lonFlag);
+% validRange = FY4A_Lon >= Reg.LonMin & FY4A_Lon <= Reg.LonMax & FY4A_Lat >= Reg.LatMin & FY4A_Lat <= Reg.LatMax; %和tbb重叠的经纬度范围。保留中国区域的经纬范围。
+% 
+% FY4A_Lat(~validRange)=nan;
+% FY4A_Lon(~validRange)=nan;
+
+lat = 54:-0.05:3;
+lon = 73:0.05:135;
+[FY4A_Lon,FY4A_Lat] = meshgrid(lon,lat);
+
+dirCAL='/PublicData/CALIPSO_VFMandCpro2022/'; %加载CALIPSO VFM数据
+
+VFM_time = [];
+Altitude_VFM = [];
+VFM_Lon = [];
+VFM_Lat = [];
+Data_Result = [];
+
+for correct_flag=2
+    if correct_flag == 1
+        disp('----------------------------------------------------');
+        disp('Processing: Spatio-temporal matching with parallax correction (correct_flag = 1)');
+    elseif correct_flag == 2
+        disp('----------------------------------------------------');
+        disp('Processing: Spatio-temporal matching (correct_flag = 2)');
+    end
+    for time = starttime:1:endtime
+        disp(['Handling Time:',datestr(time, 'yyyy-mm-dd')]);
+        % 时间间隔是 1 小时 (1/24 天)
+        FY4A_Time_All = (time : 1/24 : time + 23/24)';
+
+        %% 匹配CALIPSO
+        % 预定义
+        RowNum = size(FY4A_Lat,1);
+        ColNum = size(FY4A_Lat,2);
+        TimeNum = size(FY4A_Time_All,1);
+        % 按照需要预定义输出
+        CloudTop_CAL_95P = nan*ones(RowNum,ColNum,TimeNum);% 95%分位数的云顶高，标记匹配的CALIPSO廓线是否检测到云，0为无云，1为有云
+        % CloudTop_CAL_COD = nan*ones(RowNum,ColNum,TimeNum);% 增加COD约束的云顶高，km
+        CloudFraction_CAL = nan*ones(RowNum,ColNum,TimeNum);%云分数只是作为一个参考，此处没有更新COD约束的云分数，影响不大
+        % CloudFraction_CAL_COD = nan*ones(RowNum,ColNum,TimeNum);%更新有COD约束的云分数
+        CloudPhase_CAL = nan*ones(RowNum,ColNum,TimeNum); % 云相态——0：晴空、1：水云、2：冰云、3：混合相态
+        CloudLabel_4 = nan*ones(RowNum,ColNum,TimeNum); % 四分类云掩膜——0：晴空、1：可能晴空、2：可能有云、3：有云
+        CloudLabel_6 = nan*ones(RowNum,ColNum,TimeNum); % 六分类云掩膜——0：晴空、1：可能晴空、2：水云、3：可能水云、4：冰云、5：可能冰云
+        CloudFraction = nan*ones(RowNum,ColNum,TimeNum);
+
+        % CloudPhase_CAL_COD = nan*ones(RowNum,ColNum,TimeNum);% 增加COD约束的云相态
+        % MultiFraction_CAL = nan*ones(RowNum,ColNum,TimeNum);%多层云分数，默认输出为考虑间隔约束的多层云分数
+        % MultiFraction_CAL_COD = nan*ones(RowNum,ColNum,TimeNum);%增加COD约束的多层云分数
+
+        %%
+        % NameTimeStr = [FY4A_Year,'-',FY4A_Month,'-',FY4A_Day];
+        NameTimeStr =  datestr(time, 'yyyy-mm-dd');
+        DateVector = datevec(time);
+        FY4A_Year = DateVector(1);   % 年份 (例如: 2025)
+        FY4A_Month = DateVector(2);  % 月份 (例如: 10)
+        FY4A_Day = DateVector(3);    % 日期 (例如: 21)
+        FY4A_YearStr = num2str(FY4A_Year, '%04d');
+        FY4A_MonthStr = num2str(FY4A_Month, '%02d');
+        FY4A_DayStr = num2str(FY4A_Day, '%02d');
+
+
+        % fileList_VFM = Fun_filesTraversal([dirCAL,'VFM/',FY4A_YearStr,FY4A_MonthStr,'/'],['*',NameTimeStr,'*.hdf']); % VFM按年份保存
+        fileList_VFM = Fun_filesTraversal([dirCAL,'VFM/',FY4A_YearStr,FY4A_MonthStr,'/'],['*',NameTimeStr,'*.hdf']); % VFM按年份保存
+
+        fileNum_CAL = size(fileList_VFM,1);
+        %% 检查 VFM 文件数量，如果为 0 则跳过当前 FY4A 日期的处理
+        if fileNum_CAL == 0
+            % 提示信息
+            disp(['Warning:Skip ', NameTimeStr, '，Because no related VFM file。']);
+
+            % 跳过当前 FY4A 日期循环的剩余部分
+            continue;
+        end
+
+        for file_i = 1:fileNum_CAL
+
+            %% 读取CALIPSO VFM
+            disp(['File ',num2str(file_i),' ',fileList_VFM{file_i,3}]);
+            Year_temp = fileList_VFM{file_i,3}(31:34); %VFM文件的年
+            Month_temp = fileList_VFM{file_i,3}(36:37);%VFM文件的月
+            Day_temp = fileList_VFM{file_i,3}(39:40);%VFM文件的月
+            if ~strcmp(Year_temp,FY4A_YearStr) || ~strcmp(Month_temp,FY4A_MonthStr) || ~strcmp(Day_temp,FY4A_DayStr)
+                continue;
+            end
+            Longitude_5km = single(hdfread(fileList_VFM{file_i,1},'/Longitude'));%初次读入经度1D，3616个经度
+            Latitude_5km = single(hdfread(fileList_VFM{file_i,1},'/Latitude'));%初次读入经度1D，3616个纬度。
+            Longitude_VFM = single(hdfread(fileList_VFM{file_i,1},'ssLongitude'));%初次读入经度1D，3616个经度
+            Latitude_VFM = single(hdfread(fileList_VFM{file_i,1},'ssLatitude'));%初次读入经度1D，3616个纬度。
+
+            %VFM的经纬度落在H8范围里面的点logic值
+            validRange_VFM = Longitude_VFM >= Reg.LonMin & Longitude_VFM <= Reg.LonMax & Latitude_VFM >= Reg.LatMin & Latitude_VFM <= Reg.LatMax; %和tbb重叠的经纬度范围。保留中国区域的经纬范围。
+            validRange_5km = Longitude_5km >= Reg.LonMin & Longitude_5km <= Reg.LonMax & Latitude_5km >= Reg.LatMin & Latitude_5km <= Reg.LatMax; %和tbb重叠的经纬度范围。保留中国区域的经纬范围。
+
+            if(sum(validRange_VFM)==0)
+                disp('VFM LatLon is not in ROI LatLon, skip this hdf file!');
+                continue;
+            end
+
+            % CALIPSO 时间变量
+            Profile_Time = hdfread(fileList_VFM{file_i,1}, 'ssProfile_Time');%读入时间
+            dateUTC_Apro = convertTAITime(Profile_Time); %CAPLISO time 转为UTC time。
+
+            % CALIPSO 高度变量
+            Altitude = hdfread(fileList_VFM{file_i,1}, '/metadata', 'Fields', 'Lidar_Data_Altitudes', 'FirstRecord',1 ,'NumRecords',1); %每个大点处Vertical上有583个点。
+            Altitude = Altitude{1,1};
+
+            %% 匹配CALIPSO的CPro消光系数，提取目标COD处的高度
+            Name_substr = fileList_VFM{file_i,3}(end-14:end);
+            % Name_substr = fileList_VFM{file_i,3}(end-21:end);
+            % filepath_CPro = [];
+            % filepath_CPro = [[dirCAL,'CPro/',FY4A_YearStr,FY4A_MonthStr,'/'],strcat('CAL_LID_L2_05kmCPro-Standard-V4-51.',Year_temp,'-',Month_temp,'-',Day_temp,Name_substr)];
+            filepath_CPro = [[dirCAL,'CPro\',FY4A_YearStr,FY4A_MonthStr,'\'],strcat('CAL_LID_L2_05kmCPro-Standard-V4-51.',Year_temp,'-',Month_temp,'-',Day_temp,Name_substr)];
+
+            filepath_CPro = [];
+            TargetCOD = 0.2; % 预定义目标光学厚度
+            if ~isempty(filepath_CPro)
+                [Flag_VFM,Flag_VFM5, CAL_H, ~,Latitude_CPro] = Fun_Calculate_TargetH_LSM(filepath_CPro,TargetCOD,Latitude_5km,Latitude_VFM,Altitude,Reg);
+                % 1.0：用于“上层厚冰云”判别
+                [~, ~,CAL_H_1p0, ~, ~] = Fun_Calculate_TargetH_LSM( ...
+                    filepath_CPro, 1.0, Latitude_5km, Latitude_VFM, Altitude, Reg);
+                validRange_VFM = validRange_VFM & Flag_VFM;
+                validRange_5km = validRange_5km & Flag_VFM5;
+                % 如果 VFM 文件中没有数据点落入 ROI 范围
+                if sum(validRange_VFM) == 0
+                    disp(['注意：跳过文件 ', fileList_VFM{file_i,1}, '，无 VFM 廓线落入 ROI 范围。']);
+                    continue; % 跳到 for 循环的下一个文件
+                end
+            else
+                CAL_H = [];
+            end
+
+            %% 更新 VFM范围
+            VFM_Lon = Longitude_VFM(validRange_VFM); %截取ROI范围内经度
+            VFM_Lat = Latitude_VFM(validRange_VFM);%截取ROI范围内纬度
+            VFM_time = dateUTC_Apro(validRange_VFM); %每个点对应的时间。
+            Altitude_VFM = cat(1,Altitude_VFM,repmat(Altitude',sum(validRange_VFM),1)); %每个点对应一个廓线共583个垂直点。[983 by 583],每一行重复。
+
+            %% 读取VFM数据（保持333m分辨率，不进行5km平均）
+            type = 'all';
+            start = [0 0];
+            edges = [-9 -9];
+            VFM_Block_All = Fun_Read_VFM(fileList_VFM{file_i,1},validRange_5km,type,start,edges,0); %[N*15,545]
+            % 扩展高度层到583层（与原始VFM数据一致）
+            start_extend = repmat(VFM_Block_All(:,1),[1,32]);
+            end_extend = repmat(VFM_Block_All(:,end),[1,6]);
+            VFM_Block_All = [start_extend,VFM_Block_All,end_extend]; %[N*15,583]
+            VFM_Block_All = round(VFM_Block_All);
+            VFM_Block_All = uint8(VFM_Block_All);
+
+            %% 读取VFM云相态数据（保持333m分辨率）
+            type = 'phase';
+            VFM_Block_Phase = Fun_Read_VFM(fileList_VFM{file_i,1},validRange_5km,type,start,edges,0); %[N*15,545]
+            start_extend = repmat(VFM_Block_Phase(:,1),[1,32]);
+            end_extend = repmat(VFM_Block_Phase(:,end),[1,6]);
+            VFM_Block_Phase = [start_extend,VFM_Block_Phase,end_extend]; %[N*15,583]
+            VFM_Block_Phase = round(VFM_Block_Phase);
+            VFM_Block_Phase = uint8(VFM_Block_Phase);
+
+            %% 读取完整的COD数据（所有廓线）
+            if ~isempty(filepath_CPro) && exist(filepath_CPro, 'file')
+                [COD_All, COD_ProfileIndices] = Fun_ReadCOD_AllProfiles(filepath_CPro, Latitude_VFM, Altitude, Reg);
+            else
+                COD_All = [];
+                COD_ProfileIndices = [];
+            end
+
+
+            % 视差矫正 - 需要先计算云顶高用于视差校正
+            % 临时计算云顶高用于视差校正（简化处理，使用最高云顶）
+            if correct_flag==1
+                % 简单计算云顶高（用于视差校正）
+                temp_cloud_top = nan(length(VFM_Lat), 1);
+                for prof_i = 1:length(VFM_Lat)
+                    prof_start = (prof_i-1)*15 + 1;
+                    prof_end = prof_i*15;
+                    if prof_end <= size(VFM_Block_All, 1)
+                        temp_block = VFM_Block_All(prof_start:prof_end, :);
+                        cloud_mask = (temp_block == 2); % 云
+                        if any(cloud_mask(:))
+                            [cloud_rows, ~] = find(cloud_mask);
+                            if ~isempty(cloud_rows)
+                                top_row = min(cloud_rows);
+                                temp_cloud_top(prof_i) = Altitude(top_row);
+                            end
+                        end
+                    end
+                end
+                [VFM_Lat_new,VFM_Lon_new,s] = Fun_ParallaxCorrection(VFM_Lat, VFM_Lon, temp_cloud_top, 2);
+                VFM_Lat_new(isnan(VFM_Lat_new)) = VFM_Lat(isnan(VFM_Lat_new));
+                VFM_Lon_new(isnan(VFM_Lon_new)) = VFM_Lon(isnan(VFM_Lon_new));
+                savepath = [savepath0,'AfterCorrection/'];
+                correctflag_str = 'Corrected';
+            elseif correct_flag==2
+                VFM_Lat_new = VFM_Lat;
+                VFM_Lon_new = VFM_Lon;
+                savepath = [savepath0,'BeforeCorrection/'];
+                correctflag_str = '';
+            end
+
+            % 若目录不存在，则创建
+            if ~exist(savepath, 'dir')
+                mkdir(savepath);
+            end
+
+            %% 使用新的匹配函数：从FY4A网格角度匹配多根333m廓线
+            MinProfileCount = 10;
+            SearchRadius_km = DISTANCE_THRESHOLD_KM;
+
+            GridProfilesMap = Fun_match_GridToProfiles( ...
+                FY4A_Lon, FY4A_Lat, FY4A_Time_All, ...
+                VFM_Lon_new, VFM_Lat_new, VFM_time, ...
+                MaxTimeDiff_hours, SearchRadius_km, MinProfileCount);
+
+
+            % 检查是否有有效匹配
+            if isempty(GridProfilesMap)
+                disp('No valid spatiotemporal matches found in this CALIPSO file.');
+                continue;
+            end
+
+            %% 对每个匹配的网格，提取云属性
+            for grid_i = 1:length(GridProfilesMap)
+                gridRow = GridProfilesMap(grid_i).gridRow;
+                gridCol = GridProfilesMap(grid_i).gridCol;
+                gridTime = GridProfilesMap(grid_i).gridTimeIdx;
+                profileIndices = GridProfilesMap(grid_i).profileIndices; % 匹配到的VFM廓线索引
+
+                % 提取这些廓线的数据
+                % 注意：profileIndices是相对于validRange_VFM的索引
+                % 需要找到对应的COD数据索引
+                valid_VFM_indices = find(validRange_VFM); % 原始VFM数据中的有效索引
+                if ~isempty(COD_ProfileIndices)
+                    % CAL_H 来自 Fun_Calculate_TargetH_LSM 输出（2×N333）
+                    [ProfileData, ProfilePhase, CalRow0p2, CalRow1p0, dbg] = Fun_ExtractProfileData( ...
+                        VFM_Block_All, VFM_Block_Phase, profileIndices, Altitude, CAL_H, CAL_H_1p0);
+
+                    % 建议打印一次看诊断
+                    disp(dbg);
+                else
+                    [ProfileData, ProfilePhase, CalRow0p2, CalRow1p0, dbg] = Fun_ExtractProfileData(...
+                        VFM_Block_All, VFM_Block_Phase, profileIndices, Altitude, [],[]);
+                end
+
+                % 使用新的云标签提取函数
+                % CloudLabel = Fun_ExtractCloudLabel_New(ProfileData, ProfilePhase, CalRow1p0, MinProfileCount);
+                minDH_km = 0.1; % 例：层间距阈值(单位km)，你自己定
+                % CloudLabel = Fun_ExtractCloudLabel_New( ...
+                %     ProfileData, ProfilePhase, Altitude, CalRow1p0, MinProfileCount, minDH_km);
+                CloudLabel = Fun_ExtractCloudLabel_CALIPSO_FullProfile( ...
+                    ProfileData, ProfilePhase, Altitude, CalRow1p0, MinProfileCount, minDH_km);
+
+                [Label4, Label6,CF] = Fun_ExtractCloudLabel_CALIPSO_ProfileRatio( ...
+                    ProfileData, ProfilePhase, Altitude, CalRow1p0, MinProfileCount, minDH_km);
+
+                % 保存云标签
+                CloudPhase_CAL(gridRow, gridCol, gridTime) = CloudLabel;
+                CloudLabel_4(gridRow, gridCol, gridTime) = Label4;
+                CloudLabel_6(gridRow, gridCol, gridTime) = Label6;
+                CloudFraction(gridRow, gridCol, gridTime) = CF;
+
+                % ---------- 仅在“非晴空”时计算云属性 ----------
+                if CloudLabel ~= 0
+
+                    % ===== 云顶高：最高云bin → 95%分位 =====
+                    cloud_tops = nan(size(ProfileData,1), 1);
+                    MinCloudBins = 3; % 防噪声
+
+                    for prof_i = 1:size(ProfileData,1)
+                        cloud_bins = find(ProfileData(prof_i,:) == 2);
+                        if numel(cloud_bins) < MinCloudBins
+                            continue;
+                        end
+                        [~, imax] = max(Altitude(cloud_bins));
+                        cloud_tops(prof_i) = Altitude(cloud_bins(imax));
+                    end
+
+                    cloud_tops = cloud_tops(~isnan(cloud_tops));
+                    if ~isempty(cloud_tops)
+                        CloudTop_CAL_95P(gridRow, gridCol, gridTime) = prctile(cloud_tops, 95);
+                    end
+
+                    % ===== 云分数：有效bin中云bin占比 =====
+                    valid_mask = (ProfileData ~= 0) & (ProfileData ~= 5) & ...
+                        (ProfileData ~= 6) & (ProfileData ~= 7);
+                    cloud_mask = (ProfileData == 2) & valid_mask;
+
+                    total_valid = sum(valid_mask, 2);
+                    cloud_valid = sum(cloud_mask, 2);
+
+                    cloud_fraction_each = cloud_valid ./ max(total_valid, 1);
+                    cloud_fraction_each(total_valid == 0) = NaN;
+
+                    if any(~isnan(cloud_fraction_each))
+                        CloudFraction_CAL(gridRow, gridCol, gridTime) = ...
+                            mean(cloud_fraction_each, 'omitnan');
+                    end
+
+                else
+                    % 晴空：显式设为 NaN（防止之前残留值）
+                    CloudTop_CAL_95P(gridRow, gridCol, gridTime) = 0;
+                    CloudFraction_CAL(gridRow, gridCol, gridTime) = 0;
+                end
+
+
+            end
+
+        end
+        %% 将数据保存
+        if file_i == fileNum_CAL %假如到最后一个文件了就存储
+            % Time_Current = fileList_H8{fileH8_i,3}(1:8);
+            Time_Current = datestr(time, 'yyyymmdd');
+            Data_Result.Lon = FY4A_Lon;
+            Data_Result.Lat = FY4A_Lat;
+            Data_Result.Time = FY4A_Time_All;
+            Data_Result.CloudTop_CAL_95P = CloudTop_CAL_95P; % 和静止卫星数据一样的结构
+            % Data_Result.CloudTop_CAL_COD = CloudTop_CAL_COD; % 保留（如果需要）
+            Data_Result.CloudFraction_CAL = CloudFraction_CAL;
+            % Data_Result.CloudFraction_CAL_COD = CloudFraction_CAL_COD; % 保留（如果需要）
+            Data_Result.CloudPhase_CAL = CloudPhase_CAL; % 新的云标签：0=晴空, 1=水云, 2=冰云, 3=多层云, 4=Mixed/uncertain
+            Data_Result.CloudLabel_4 = CloudLabel_4;
+            Data_Result.CloudLabel_6 = CloudLabel_6;
+            Data_Result.CloudFraction = CloudFraction;
+
+            % Data_Result.CloudPhase_CAL_COD = CloudPhase_CAL_COD; % 保留（如果需要）
+            % Data_Result.MultiFraction_CAL = MultiFraction_CAL; % 保留（如果需要）
+            % Data_Result.MultiFraction_CAL_COD = MultiFraction_CAL_COD; % 保留（如果需要）
+            save([savepath,correctflag_str,'MatchedVFM_CloudProperty_',Time_Current,'.mat'],'Data_Result','-v7.3');
+            Data_Result=[];
+        end
+    end
+end

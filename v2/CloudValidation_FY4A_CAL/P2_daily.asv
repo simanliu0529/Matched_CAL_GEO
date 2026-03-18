@@ -1,0 +1,119 @@
+% ZL
+% 读取的CALIPSO的VFM数据,用VFM生成一个和H8数据[881,1101,Ntimes]大小相同的中国区域的云熟悉分布数据集，并与H8匹配
+clc; clear; close all;
+
+%% 预设置
+% 研究区域 中国73-135E，3-54N；云南：97-107，21-30%
+Reg.LonMin = 80; %经度
+Reg.LonMax = 170;
+Reg.LatMin = -60; %纬度
+Reg.LatMax = 60;
+%% 读取数据——根据自己的数据存储位置修改路径
+dirFY4 = '/data/yangyin/liusiman/FYData/FY_4A/'; %加载葵花数据
+Outpath = '/data/yangyin/liusiman/FYData/FY_4A/Matched_P2_uncorrected_new/';
+% fileList_FY4 = Fun_filesTraversal([dirFY4,'CLM/'],'*_CloudMask.mat'); % 以读取H8的云掩膜
+fileList_FY4_matched = Fun_filesTraversal([dirFY4,'Matched_P1_uncorrected_new/'],'*.mat'); % 以读取H8的云掩膜
+fileNum_FY4 = size(fileList_FY4_matched,1);
+for fileFY4_i = 1:fileNum_FY4
+    %% 加载匹配的VFM数据
+    % Time_Current = fileList_H8{fileH8_i,3}(1:8);
+    MatchedCAL = importdata(fileList_FY4_matched{fileFY4_i,1});%把某波段某月的mat文件读出来
+    FY4_Year = fileList_FY4_matched{fileFY4_i,3}(1:4);
+    FY4_Month = fileList_FY4_matched{fileFY4_i,3}(5:6);
+    FY4_Day = fileList_FY4_matched{fileFY4_i,3}(end-4:end-3);
+    Time_Current = [FY4_Year,FY4_Month,FY4_Day];
+    % filePath = ['/data/yangyin/liusiman/FYData/FY_4A/Matched_P1_uncorrected_new/MatchedVFM_CloudProperty_', Time_Current, '.mat'];
+    % % 检查文件是否存在
+    % if exist(filePath, 'file')
+    %     MatchedCAL = importdata(filePath);
+    % else
+    %     disp(['文件不存在：', filePath, '，跳过!']);
+    %     continue;
+    % end
+    CloudTop_CAL_95P = MatchedCAL.CloudTop_CAL_95P; % 和H8数据一样的结构
+    CloudTop_CAL_COD = MatchedCAL.CloudTop_CAL_COD; % 和H8数据一样的结构
+    CloudFraction_CAL = MatchedCAL.CloudFraction_CAL;
+    CloudPhase_CAL = MatchedCAL.CloudPhase_CAL;
+    CloudPhase_CAL_COD = MatchedCAL.CloudPhase_CAL_COD;
+    % MultiFraction_CAL = MatchedCAL.MultiFraction_CAL; % 和H8数据一样的结构
+    % MultiFraction_CAL_COD = MatchedCAL.MultiFraction_CAL_COD; % 和H8数据一样的结构
+
+
+    % 加载H8的云掩膜，注意这里示例只是有云和无云的二值划分，可加载云相态替换云mask
+
+    FY4_Cloud_temp = importdata(fileList_FY4_matched{fileFY4_i,1});%把某波段某月的mat文件读出来
+    FY4_Year = fileList_FY4_matched{fileFY4_i,3}(1:4);
+    FY4_Month = fileList_FY4_matched{fileFY4_i,3}(5:6);
+    FY4_Day = fileList_FY4_matched{fileFY4_i,3}(7:8);
+   
+    NameTimeStr = [FY4_Year,FY4_Month,FY4_Day];
+    FY4_Lon = FY4_Cloud_temp.Lon';
+    FY4_Lat = FY4_Cloud_temp.Lat';
+    FY4_Cloud_Time = FY4_Cloud_temp.Time;
+    FY4_CloudMask = single(FY4_Cloud_temp.Data); % 原始数据1表示晴空
+    clear FY4_Cloud_temp
+    % FY4_CloudMask(FY4_CloudMask == 1) = 2;
+    % FY4_CloudMask(FY4_CloudMask == 0) = 1;
+    % FY4_CloudMask(FY4_CloudMask == 2) = 0; % 将1定义为云
+    % 将数据还原为每天24小时观测，无观测时为NaN
+    [FY4_Cloud_All,FY4_Time_All] = fun_H8Data2AllDay(FY4_Cloud_Time,FY4_CloudMask);
+
+    %  %% 加载自己制作的云掩膜：*_NotCldy0_Cldy1_Mask，1表示为云
+    %  H8_FullCloud_temp = importdata([dirH8,'FullTime_Cloud\',NameTimeStr,'_NotCldy0_Cldy1_Mask','.mat']);
+    %  H8_FullCloud_Time = H8_FullCloud_temp.Time;
+    %  H8_FullCloudMask = single(H8_FullCloud_temp.Data);
+    %  clear H8_FullCloud_temp
+    %     % 将数据还原为每天24小时观测，无观测时为NaN
+    % [H8_FullCloud_All,~] = fun_H8Data2AllDay(H8_FullCloud_Time,H8_FullCloudMask);
+
+    %% 加载H8的云相态产品
+    FY4_CLP_temp = importdata([dirFY4,'CLP/',NameTimeStr,'_CloudPhase','.mat']);
+    FY4_CLP_Time = FY4_CLP_temp.Time;
+    FY4_CloudPhase = single(FY4_CLP_temp.Data);
+    clear FY4_CLP_temp
+    % 将数据还原为每天24小时观测，无观测时为NaN
+    [FY4_CLP_All,~] = fun_H8Data2AllDay(FY4_CLP_Time,FY4_CloudPhase);
+
+    %% 加载H8的云顶高产品，单位为km
+    FY4_CTH_temp = importdata([dirFY4,'CTH/',NameTimeStr,'_CloudTopHeight','.mat']);
+    FY4_CTH_Time = FY4_CTH_temp.Time;
+    FY4_CloudTopHeight = single(FY4_CTH_temp.Data);
+    clear FY4_CTH_temp
+    % 将数据还原为每天24小时观测，无观测时为NaN
+    [FY4_CTH_All,~] = fun_H8Data2AllDay(FY4_CTH_Time,FY4_CloudTopHeight);
+
+    %% 加载太阳天顶角SOZ：*_SOZ,并且SOZ>80°时，定义为夜间数据
+    FY4_SOZ_temp = importdata([dirFY4,'SOZ/',NameTimeStr,'_SOZ','.mat']);
+    FY4_SOZ_Time = FY4_SOZ_temp.Time;
+    FY4_DayFlag = single(FY4_SOZ_temp.Data <= 70); % 1：白天，0：夜间
+    clear FY4_SOZ_temp
+    % 将数据还原为每天24小时观测，无观测时为NaN
+    [FY4_DayFlag_All,~] = fun_H8Data2AllDay(FY4_SOZ_Time,FY4_DayFlag);
+
+    
+
+    %% 保存H8和CALIPSO的匹配数据Table
+    % 根据需要保存数据，不一定非得全部匹配保存
+    Index = ~isnan(CloudPhase_CAL); % CALIPSO沿轨匹配的数据
+    FY4_Lon2 = repmat(FY4_Lon,1,1,length(FY4_Time_All));
+    FY4_Lat2 = repmat(FY4_Lat,1,1,length(FY4_Time_All));
+    MatchedTable = [FY4_Lat2(Index),FY4_Lon2(Index),FY4_DayFlag_All(Index),...
+        FY4_Cloud_All(Index),FY4_CLP_All(Index),FY4_CTH_All(Index),... %H8_FullCloud_All(Index)
+        CloudTop_CAL_95P(Index),CloudTop_CAL_COD(Index),...
+        CloudFraction_CAL(Index),....
+        CloudPhase_CAL(Index),CloudPhase_CAL_COD(Index)];  % MultiFraction_CAL(Index),MultiFraction_CAL_COD(Index)
+
+    DayIndex = MatchedTable(:,3) == 0| isnan(MatchedTable(:,3));
+    MatchedTable(DayIndex,:) = NaN; % 将不确定白天夜晚的统计结果置为nan
+     
+    clear FY4_Lon2 FY4_Lat2 Index DayIndex
+    MatchedTableVar = ['H8_Lat','H8_Lon','H8_DayFlag',...
+        'H8_CloudMask','H8_CloudPhase','H8_CloudTopHeight',...
+        'CAL_CloudTop_95P','CAL_CloudTop_COD',...
+        'CAL_CloudFraction',...
+        'CAL_CloudPhase','CAL_CloudPhase_COD'];
+    Mated_CloudTable.Data = MatchedTable;
+    Mated_CloudTable.VarNames = MatchedTableVar;
+    save([Outpath,'Mated_CloudPropertyTable_',Time_Current,'.mat'],'Mated_CloudTable','-v7.3');
+    clear Mated_CloudMaskTable
+end

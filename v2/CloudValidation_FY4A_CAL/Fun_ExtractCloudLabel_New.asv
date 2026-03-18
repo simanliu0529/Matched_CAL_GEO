@@ -1,0 +1,134 @@
+function CloudLabel = Fun_ExtractCloudLabel_New( ...
+    ProfileData, ProfilePhase, CalRow1p0, MinProfileCount)
+
+% CloudLabel: 0=晴空, 1=水云, 2=冰云, 3=多层云, 4=Mixed/uncertain
+%
+% 前提：
+% - 输入已做 COD<0.2 薄云过滤（data==2 为过滤后的云bin）
+% - phase: 水=2；冰=1或3
+% - CalRow1p0(i): 过滤薄云后从顶向下累计COD首次达到1.0的行号；达不到则 NaN
+%
+% 判据（二维统计 + 向量化结构判别）：
+% 1) 多层云：mixed_w>75% 且 thinUpper_w>75%
+% 2) 冰云（上层厚冰主导）：thickIce_w>75%
+% 3) 水云：water_bin_ratio>75%（所有云bin内）
+% 4) 冰云：ice_bin_ratio>75%（所有云bin内）
+% 5) 晴空：clear_bin_ratio>=90%（所有有效bin内）
+% 6) 其他：Mixed/uncertain
+
+if nargin < 4 || isempty(MinProfileCount)
+    MinProfileCount = 10;
+end
+
+[N, M] = size(ProfileData);
+
+% ---------- 2D masks ----------
+% valid_mask = (ProfileData ~= 5 & ProfileData ~= 6 & ProfileData ~= 7); % N×M
+valid_mask = (ProfileData ~= 0) & (ProfileData ~= 5) & (ProfileData ~= 6) & (ProfileData ~= 7);
+
+row_valid_cnt = sum(valid_mask, 2);                                    % N×1
+valid_row = row_valid_cnt > 0;
+N_eff = sum(valid_row);
+
+if N_eff < MinProfileCount
+    CloudLabel = 4;
+    return;
+end
+
+cloud_mask = (ProfileData == 2) & valid_mask; % 已薄云过滤后的云bin
+water_mask = cloud_mask & (ProfilePhase == 2);
+ice_mask   = cloud_mask & (ProfilePhase == 1 | ProfilePhase == 3);
+
+% ---------- bin-level totals (真正二维统计) ----------
+TotValidBin = sum(row_valid_cnt);            % sum of valid bins in 2D
+TotCloudBin = sum(cloud_mask, 'all');
+TotWaterBin = sum(water_mask, 'all');
+TotIceBin   = sum(ice_mask, 'all');
+
+if TotValidBin == 0
+    CloudLabel = 4;
+    return;
+end
+
+clear_bin_ratio = 1 - TotCloudBin / TotValidBin;
+
+if TotCloudBin > 0
+    water_bin_ratio = TotWaterBin / TotCloudBin;
+    ice_bin_ratio   = TotIceBin   / TotCloudBin;
+else
+    water_bin_ratio = 0;
+    ice_bin_ratio   = 0;
+end
+
+% ---------- 向量化：按“廓线结构”定义的属性（但不写for） ----------
+% 混合廓线：该行存在水云bin AND 存在冰云bin
+has_water = any(water_mask, 2);
+has_ice   = any(ice_mask, 2);
+is_mixed  = valid_row & has_water & has_ice;
+
+% 顶层云bin位置：对每行找 cloud_mask 中第一个true
+% max 对 logical 返回第一个最大值位置 -> 即第一个1的位置
+[cloud_exists, top_idx] = max(cloud_mask, [], 2);  % cloud_exists: 0/1
+cloud_exists = (cloud_exists > 0) & valid_row;
+
+% 顶层相态：用线性索引取 ProfilePhase(row, top_idx)
+top_is_ice = false(N,1);
+rows = find(cloud_exists);
+lin = sub2ind([N, M], rows, top_idx(rows));
+top_phase = ProfilePhase(lin);
+top_is_ice(rows) = (top_phase == 1) | (top_phase == 3);
+
+% CalRow1p0 与行数对齐
+CalRow1p0 = CalRow1p0(:);
+if numel(CalRow1p0) < N
+    CalRow1p0(N,1) = NaN; % 不足则补NaN，避免越界
+end
+is_thin_upper = isnan(CalRow1p0);
+is_thick_upper = ~isnan(CalRow1p0);
+
+% 顶层厚冰(>=1.0)：顶层是冰 & CalRow1p0非NaN
+is_thickIceUpper = cloud_exists & top_is_ice & is_thick_upper;
+
+% 多层云里“上层冰薄(<1.0)”：混合 & 顶层冰 & CalRow1p0为NaN
+is_mixed_thinUpper = is_mixed & top_is_ice & is_thin_upper;
+
+% ---------- 把“廓线结构属性”折算成二维占比（权重=valid-bin） ----------
+W_all = sum(row_valid_cnt(valid_row));
+
+% 你也可以把权重改为 cloud-bin（更强调有云的区域）：
+% row_cloud_cnt = sum(cloud_mask,2);
+% W_all = sum(row_cloud_cnt(valid_row));
+% 然后下面的 row_valid_cnt 改成 row_cloud_cnt
+
+mixed_ratio          = mean(is_mixed(valid_row));
+thin_in_mixed_ratio  = mean(is_mixed_thinUpper(valid_row & is_mixed));
+thickIce_ratio       = mean(is_thickIceUpper(valid_row));
+
+% --- 判别顺序（按你的文字逻辑） ---
+% 1) 多层云：mixed>75% 且 mixed中薄上层冰>75%
+if mixed_ratio > 0.75 && thin_in_mixed_ratio > 0.75
+    CloudLabel = 3; return;
+end
+
+% 2) 冰云像素：上层厚冰(>=1.0)占比>75%
+if thickIce_ratio > 0.75
+    CloudLabel = 2; return;
+end
+
+% 3) 晴空：有效bin中非云>=90%（过滤0.2薄云后）
+if clear_bin_ratio >= 0.90
+    CloudLabel = 0; return;
+end
+
+% 4) 纯水/纯冰：在“存在云”的前提下谈纯度
+if TotCloudBin > 0
+    if water_bin_ratio > 0.75
+        CloudLabel = 1; return;
+    end
+    if ice_bin_ratio > 0.75
+        CloudLabel = 2; return;
+    end
+end
+
+CloudLabel = 4;
+end
