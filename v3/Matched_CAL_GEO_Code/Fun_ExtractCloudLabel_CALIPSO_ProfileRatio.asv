@@ -1,0 +1,197 @@
+function [Label4, Label6,CF] = Fun_ExtractCloudLabel_CALIPSO_ProfileRatio( ...
+    ProfileData, ProfilePhase, Altitude, ...
+    CalRow1p0, MinProfileCount, minDH)
+
+if nargin < 5 || isempty(MinProfileCount), MinProfileCount = 10; end
+if nargin < 6 || isempty(minDH), minDH = 1.0; end
+
+
+Label4 = uint8(255);
+Label6 = uint8(255);
+CF = nan;
+[Nprof, ~] = size(ProfileData);
+
+% =========================================================
+% 1. 有效bin筛选
+% =========================================================
+% valid_mask = (ProfileData ~= 0) & ...
+%              (ProfileData ~= 5) & ...
+%              (ProfileData ~= 6) & ...
+%              (ProfileData ~= 7);
+% clear air或者cloud
+
+valid_mask = (ProfileData == 1) |(ProfileData == 2) ;
+
+row_valid_cnt = sum(valid_mask,2);
+valid_row = row_valid_cnt > 0;
+
+valid_profiles = find(valid_row);
+
+% if numel(valid_profiles) < MinProfileCount
+%     return
+% end
+
+cloud_mask = (ProfilePhase >= 1) &(ProfilePhase <= 3);
+water_mask = cloud_mask & (ProfilePhase == 2);
+ice_mask   = cloud_mask & ((ProfilePhase == 1) | (ProfilePhase == 3));
+
+% =========================================================
+% 2. 每条廓线先判别
+% =========================================================
+
+profile_type = zeros(Nprof,1);  
+% 0 clear
+% 1 water
+% 2 ice
+% 3 mixed
+
+% for i = valid_profiles'
+% 
+%     total_valid = sum(valid_mask(i,:));
+%     total_cloud = sum(cloud_mask(i,:));
+% 
+%     if total_valid == 0
+%         continue
+%     end
+% 
+%     cloud_ratio_profile = total_cloud / total_valid;
+% 
+%     % 判定 clear（单廓线）
+%     if cloud_ratio_profile < 0.1
+%         profile_type(i) = 0;
+%         continue
+%     end
+% 
+%     if total_cloud == 0
+%         profile_type(i) = 0;
+%         continue
+%     end
+% 
+%     water_ratio_profile = sum(water_mask(i,:)) / total_cloud;
+%     ice_ratio_profile   = sum(ice_mask(i,:))   / total_cloud;
+% 
+%     if water_ratio_profile > 0.75
+%         profile_type(i) = 1;
+%     elseif ice_ratio_profile > 0.75
+%         profile_type(i) = 2;
+%     else
+%         profile_type(i) = 3;  % mixed
+%     end
+% end
+for i = valid_profiles'
+
+    total_cloud = sum(cloud_mask(i,:));
+
+    % ===== 1 判断是否有云 =====
+    if total_cloud == 0
+        profile_type(i) = 0;  % clear
+        continue
+    end
+
+    % ===== 2 判断云相态 =====
+    water_ratio_profile = sum(water_mask(i,:)) / total_cloud;
+    ice_ratio_profile   = sum(ice_mask(i,:))   / total_cloud;
+
+    if water_ratio_profile > 0.75
+        profile_type(i) = 1;  % water
+    elseif ice_ratio_profile > 0.75
+        profile_type(i) = 2;  % ice
+    else
+        profile_type(i) = 3;  % mixed
+    end
+
+    % if water_ratio_profile >=ice_ratio_profile
+    %     profile_type(i) = 1;
+    % else
+    %     profile_type(i) = 2;
+    % end
+
+end
+% =========================================================
+% 3. 统计廓线比例
+% =========================================================
+
+valid_profiles = valid_profiles(:);
+Nvalid = numel(valid_profiles);
+
+clear_profiles = sum(profile_type(valid_profiles) == 0);
+cloud_profiles = Nvalid - clear_profiles;
+
+cloud_frac = cloud_profiles / Nvalid;
+CF = cloud_frac;
+if cloud_profiles > 0
+    water_profiles = sum(profile_type(valid_profiles) == 1);
+    ice_profiles   = sum(profile_type(valid_profiles) == 2);
+
+    water_frac = water_profiles / cloud_profiles;
+    ice_frac   = ice_profiles   / cloud_profiles;
+else
+    water_frac = 0;
+    ice_frac = 0;
+end
+
+% =========================================================
+% 4. 六分类判别（完全MODIS逻辑）
+% =========================================================
+
+if cloud_frac < 0.10
+    Label6 = uint8(0);
+
+elseif cloud_frac < 0.20
+    Label6 = uint8(1);
+
+elseif cloud_frac >= 0.75
+    
+    if water_frac > 0.75
+        Label6 = uint8(2);
+    elseif ice_frac > 0.75
+        Label6 = uint8(4);
+    else
+        if water_frac > ice_frac
+            Label6 = uint8(3);
+        else
+            Label6 = uint8(5);
+        end
+    end
+
+else   % 0.20 ≤ cloud_frac < 0.75
+    
+    if water_frac > ice_frac
+        Label6 = uint8(3);
+    else
+        Label6 = uint8(5);
+    end
+end
+
+% =========================================================
+% 5. 四分类映射
+% =========================================================
+if cloud_frac < 0.10
+    Label4 = uint8(0);
+
+elseif cloud_frac < 0.20
+    Label4 = uint8(1);
+
+elseif cloud_frac < 0.75
+    Label4 = uint8(2);
+elseif cloud_frac <= 1
+    Label4 = uint8(3);
+else
+    Label4 = uint8(255);
+
+
+
+% switch Label6
+%     case 0
+%         Label4 = uint8(0);
+%     case 1
+%         Label4 = uint8(1);
+%     case {2,4}
+%         Label4 = uint8(3);
+%     case {3,5}
+%         Label4 = uint8(2);
+%     otherwise
+%         Label4 = uint8(255);
+% end
+
+end
